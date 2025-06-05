@@ -1,0 +1,12 @@
+[package]
+name = "embedded-audio"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["embedded-sdmmc"]
+embedded-sdmmc = ["dep:embedded-sdmmc"]
+std = []
+
+[dependencies]
+embedded-sdmmc = { version = "0.8.1", optional = true }
