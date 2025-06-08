@@ -1,4 +1,4 @@
-#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
 #[cfg(feature = "embedded-sdmmc")]
 use embedded_sdmmc::{BlockDevice, File, TimeSource};
@@ -21,6 +21,7 @@ pub trait AudioFile<File: PlatformFile> {
 }
 
 /// Data type of audio sample encoding
+#[derive(PartialEq, Eq, Copy, Clone)]
 pub enum Encoding {
     /// Unsigned 8 bit audio
     U8Bit,
@@ -31,6 +32,7 @@ pub enum Encoding {
 }
 
 /// Number and type (interleaved or not) of audio channels
+#[derive(PartialEq, Eq, Copy, Clone)]
 pub enum Channels {
     Mono,
     Stereo,
@@ -42,6 +44,7 @@ pub enum Channels {
 // }
 
 /// Types of errors occurring in platform file transactions
+#[derive(Debug)]
 pub enum PlatformFileErrors {
     FailedRead,
     FailedSeek,
@@ -110,5 +113,61 @@ impl PlatformFile for File {
 
     fn length(&mut self) -> usize {
         File::metadata(&self).unwrap().len() as usize
+    }
+}
+
+#[cfg(test)]
+/// Simple wrapper to test file decodes in tests
+struct TestFile {
+    contents: &'static [u8],
+    current_pos: u16,
+}
+
+#[cfg(test)]
+impl TestFile {
+    fn from_bytes(bytes: &'static [u8]) -> Self {
+        Self {
+            contents: bytes,
+            current_pos: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+impl PlatformFile for TestFile {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
+        let read_len = if self.current_pos as usize + buf.len() >= self.contents.len() {
+            self.contents.len() - self.current_pos as usize
+        } else {
+            buf.len()
+        };
+        let start = self.current_pos as usize;
+        for (buf, content) in buf
+            .iter_mut()
+            .zip(self.contents[start..start + read_len].iter())
+        {
+            *buf = *content
+        }
+        self.current_pos += buf.len() as u16;
+        Ok(read_len)
+    }
+
+    fn seek_from_current(&mut self, offset: usize) -> Result<(), ()> {
+        self.current_pos += offset as u16;
+        Ok(())
+    }
+
+    fn seek_from_start(&mut self, offset: usize) -> Result<(), ()> {
+        self.current_pos = offset as u16;
+        Ok(())
+    }
+
+    fn seek_from_end(&mut self, offset: usize) -> Result<(), ()> {
+        self.current_pos = (self.contents.len() - offset) as u16;
+        Ok(())
+    }
+
+    fn length(&mut self) -> usize {
+        self.contents.len()
     }
 }
