@@ -327,4 +327,42 @@ mod tests {
         wav.read(&mut sample).unwrap();
         assert!(sample == [0xff, 0xff]);
     }
+
+    #[test]
+    fn parse_le_8bit_8k_stereo() {
+        let mut file = TestFile::from_bytes(&[
+            0x52, 0x49, 0x46, 0x46, // RIFF
+            0x32, 0x00, 0x00, 0x00, // chunk size
+            0x57, 0x41, 0x56, 0x45, // WAVE
+            0x66, 0x6d, 0x74, 0x20, // fmt
+            0x10, 0x00, 0x00, 0x00, // fmt chunk size
+            0x01, 0x00, // audio format
+            0x02, 0x00, // channel count
+            0x40, 0x1f, 0x00, 0x00, // sample rate
+            0x80, 0x3e, 0x00, 0x00, // byte rate
+            0x20, 0x00, // block align
+            0x10, 0x00, // bits per sample
+            0x64, 0x61, 0x74, 0x61, // data
+            0x08, 0x00, 0x00, 0x00, // data chunk size
+            0x01, 0x00, // sample 1 L+R
+            0xfe, 0xff, // sample 2 L+R
+            0x02, 0x00, // sample 3 L+R
+            0xff, 0xff, // sample 4 L+R
+        ]);
+        let mut wav = Wav::new(&mut file).unwrap();
+
+        assert!(wav.fmt.channels == Channels::Stereo);
+        assert!(wav.fmt.sample_rate == 8_000);
+        assert!(wav.fmt.encoding == Encoding::S16Bit);
+
+        let mut sample = [0_u8; 2]; // size of one sample L+R
+        wav.read(&mut sample).unwrap();
+        assert!(sample == [0x01, 0x00]);
+        wav.read(&mut sample).unwrap();
+        assert!(sample == [0xfe, 0xff]);
+        wav.read(&mut sample).unwrap();
+        assert!(sample == [0x02, 0x00]);
+        wav.read(&mut sample).unwrap();
+        assert!(sample == [0xff, 0xff]);
+    }
 }
