@@ -58,9 +58,9 @@ pub enum Channels {
     Stereo,
 }
 
-impl Into<u16> for Channels {
-    fn into(self) -> u16 {
-        match self {
+impl From<Channels> for u16 {
+    fn from(val: Channels) -> Self {
+        match val {
             Channels::Mono => 1,
             Channels::Stereo => 2,
         }

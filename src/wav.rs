@@ -36,7 +36,7 @@ pub struct Wav<File: PlatformFile> {
     fmt: Fmt,
 }
 
-impl<'a, File: PlatformFile> Wav<File> {
+impl<File: PlatformFile> Wav<File> {
     pub fn new(mut file: File) -> Result<Self, Error<File::Error>> {
         let mut bytes: [u8; HEADER_SIZE] = [0; HEADER_SIZE];
         let read = file.read(&mut bytes).map_err(Error::PlatformError)?;
@@ -45,31 +45,29 @@ impl<'a, File: PlatformFile> Wav<File> {
 
         let fmt_chunk = chunks
             .iter()
-            .filter(|chunk| {
+            .find(|chunk| {
                 if let Some(chunk) = chunk {
                     chunk.chunk == ChunkTag::Fmt
                 } else {
                     false
                 }
             })
-            .next()
             .unwrap();
         let fmt = parse_fmt(&bytes[fmt_chunk.unwrap().start + 8..fmt_chunk.unwrap().end])?;
 
         let data_chunk = chunks
             .iter()
-            .filter(|chunk| {
+            .find(|chunk| {
                 if let Some(chunk) = chunk {
                     chunk.chunk == ChunkTag::Data
                 } else {
                     false
                 }
             })
-            .next()
             .unwrap();
 
         file.seek_from_start(data_chunk.unwrap().start + 8)
-            .map_err(Error::PlatformError);
+            .map_err(Error::PlatformError)?;
 
         Ok(Self {
             file,
@@ -81,7 +79,7 @@ impl<'a, File: PlatformFile> Wav<File> {
     }
 }
 
-impl<'a, File: PlatformFile> AudioFile<File> for Wav<File> {
+impl<File: PlatformFile> AudioFile<File> for Wav<File> {
     type Error = Error<File::Error>;
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error<File::Error>> {
@@ -114,8 +112,8 @@ impl<'a, File: PlatformFile> AudioFile<File> for Wav<File> {
     }
 }
 
-pub fn parse_chunks<'a, PlatformError, const MAX_CHUNKS: usize>(
-    bytes: &'a [u8],
+pub fn parse_chunks<PlatformError, const MAX_CHUNKS: usize>(
+    bytes: &[u8],
     chunks: &mut [Option<Chunk>; MAX_CHUNKS],
 ) -> Result<(), Error<PlatformError>> {
     let riff = parse_chunk(bytes, 0)?;
@@ -221,14 +219,14 @@ struct ExtraFmtParam {
 
 #[derive(PartialEq, Eq)]
 enum AudioFormat {
-    PCM,
+    Pcm,
 }
 
 impl AudioFormat {
     fn from_bytes<PlatformError>(bytes: &[u8]) -> Result<Self, Error<PlatformError>> {
         let format = u16::from_le_bytes(bytes.try_into().map_err(|_| Error::BufferSizeIncorrect)?);
         match format {
-            1 => Ok(Self::PCM),
+            1 => Ok(Self::Pcm),
             _ => Err(Error::UnsupportedAudioFormat),
         }
     }
@@ -292,7 +290,7 @@ mod tests {
         ];
 
         let fmt = super::parse_fmt::<TestFileError>(&bytes).unwrap();
-        assert!(fmt.audio_format == AudioFormat::PCM);
+        assert!(fmt.audio_format == AudioFormat::Pcm);
         assert!(fmt.sample_rate == 8_000);
         assert!(fmt.sample_format == SampleFormat::I16);
         assert!(fmt.channels == Channels::Mono);
