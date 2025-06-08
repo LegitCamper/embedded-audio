@@ -110,6 +110,17 @@ impl<File: PlatformFile> AudioFile<File> for Wav<File> {
             .seek_from_current(byte_offset)
             .map_err(Error::PlatformError)
     }
+
+    fn is_eof(&self) -> bool {
+        extern crate std;
+        use std::println;
+        println!("end: {}, read: {}", self.data_end, self.data_read);
+        self.data_end == self.data_read
+    }
+
+    fn played(&self) -> usize {
+        self.data_read
+    }
 }
 
 pub fn parse_chunks<PlatformError, const MAX_CHUNKS: usize>(

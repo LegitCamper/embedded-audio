@@ -24,6 +24,14 @@ pub trait AudioFile<File: PlatformFile> {
     fn sample_format(&self) -> SampleFormat;
     /// try to seek (from current sample) to audio sample offset NOT file byte offset
     fn try_seek(&mut self, sample_offset: i64) -> Result<(), Self::Error>;
+    /// get how many samples have been read
+    fn played(&self) -> usize;
+    /// start back from the first sample
+    fn restart(&mut self) -> Result<(), Self::Error> {
+        self.try_seek(-(self.played() as i64))
+    }
+    /// check if EOF
+    fn is_eof(&self) -> bool;
 }
 
 /// Data type of audio sample encoding
