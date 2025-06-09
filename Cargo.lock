@@ -13,6 +13,7 @@ name = "embedded-audio"
 version = "0.1.0"
 dependencies = [
  "embedded-sdmmc",
+ "heapless",
 ]
 
 [[package]]

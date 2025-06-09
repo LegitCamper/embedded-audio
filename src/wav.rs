@@ -1,30 +1,37 @@
-use crate::{AudioFile, Channels, PlatformFile, SampleFormat};
+use heapless::Vec;
 
-const HEADER_SIZE: usize = 44;
-const MAX_CHUNKS: usize = 5;
+use crate::{AudioFile, Channels, PlatformFile, PlatformFileError, SampleFormat};
+
+const MAX_CHUNKS: usize = 25;
 
 #[derive(Debug)]
-pub enum Error<PlatformError> {
+pub enum Error {
     /// No Riff chunk found
     NoRiffChunkFound,
     /// No Wave chunk found
     NoWaveChunkFound,
     /// No Wave tag found
     NoWaveTagFound,
+    /// No Fmt chunk found
+    NoFmtChunkFound,
+    /// No Data chunk found
+    NoDataChunkFound,
     /// Failed to parse fmt chunk
     FmtChunkError,
     /// File contains unsupported Format
     UnsupportedAudioFormat,
-    /// Chunk tag/id unknown
-    UnknownChunkTag,
     /// Could not parse the chunk based on tag/id
     UnknownChunk,
     /// Unknown audio encoding
     UnknownEncoding,
+    /// Unsupported channel count
     UnsupportedChannelCount,
     /// The provided buffer is too small
-    BufferSizeIncorrect,
-    PlatformError(PlatformError),
+    ChunkSizeIncorrect,
+    /// Exceeded maximum chunks
+    ExceededMaxChunks,
+    /// Platform File error
+    PlatformError(PlatformFileError),
 }
 
 /// Wav file parser
@@ -37,52 +44,53 @@ pub struct Wav<File: PlatformFile> {
 }
 
 impl<File: PlatformFile> Wav<File> {
-    pub fn new(mut file: File) -> Result<Self, Error<File::Error>> {
-        let mut bytes: [u8; HEADER_SIZE] = [0; HEADER_SIZE];
-        let read = file.read(&mut bytes).map_err(Error::PlatformError)?;
-        let mut chunks = [None; MAX_CHUNKS];
-        parse_chunks(&bytes[..read], &mut chunks)?;
+    pub fn new(mut file: File) -> Result<Self, Error> {
+        let mut chunks: Vec<Chunk, MAX_CHUNKS> = Vec::new();
+        let mut buf = [0_u8; 64];
+
+        // get riff before getting sub chunks
+        file.read(&mut buf).map_err(Error::PlatformError)?;
+        chunks
+            .push(parse_chunk(
+                buf[..8].try_into().map_err(|_| Error::ChunkSizeIncorrect)?,
+                0,
+            ))
+            .unwrap();
+
+        parse_chunks(&mut buf, &mut file, &mut chunks, 12)?;
 
         let fmt_chunk = chunks
             .iter()
-            .find(|chunk| {
-                if let Some(chunk) = chunk {
-                    chunk.chunk == ChunkTag::Fmt
-                } else {
-                    false
-                }
-            })
-            .unwrap();
-        let fmt = parse_fmt(&bytes[fmt_chunk.unwrap().start + 8..fmt_chunk.unwrap().end])?;
+            .find(|chunk| chunk.chunk == ChunkTag::Fmt)
+            .ok_or(Error::NoFmtChunkFound)?;
+        file.seek_from_start(fmt_chunk.start)
+            .map_err(Error::PlatformError)?;
+        file.read(&mut buf).map_err(Error::PlatformError)?;
+        let fmt = parse_fmt(&buf)?;
+
+        // TODO: can look for other chunks in list or info
 
         let data_chunk = chunks
             .iter()
-            .find(|chunk| {
-                if let Some(chunk) = chunk {
-                    chunk.chunk == ChunkTag::Data
-                } else {
-                    false
-                }
-            })
-            .unwrap();
-
-        file.seek_from_start(data_chunk.unwrap().start + 8)
+            .find(|chunk| chunk.chunk == ChunkTag::Data)
+            .ok_or(Error::NoDataChunkFound)?;
+        file.seek_from_start(data_chunk.start)
             .map_err(Error::PlatformError)?;
 
         Ok(Self {
             file,
             fmt,
             data_read: 0,
-            data_start: data_chunk.unwrap().start,
-            data_end: data_chunk.unwrap().end,
+            data_start: data_chunk.start,
+            data_end: data_chunk.end,
         })
     }
 }
 
 impl<File: PlatformFile> AudioFile<File> for Wav<File> {
-    type Error = Error<File::Error>;
+    type Error = Error;
 
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error<File::Error>> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         match self.file.read(buf) {
             Ok(len) => {
                 self.data_read += len;
@@ -112,9 +120,6 @@ impl<File: PlatformFile> AudioFile<File> for Wav<File> {
     }
 
     fn is_eof(&self) -> bool {
-        extern crate std;
-        use std::println;
-        println!("end: {}, read: {}", self.data_end, self.data_read);
         self.data_end == self.data_read
     }
 
@@ -123,64 +128,71 @@ impl<File: PlatformFile> AudioFile<File> for Wav<File> {
     }
 }
 
-pub fn parse_chunks<PlatformError, const MAX_CHUNKS: usize>(
-    bytes: &[u8],
-    chunks: &mut [Option<Chunk>; MAX_CHUNKS],
-) -> Result<(), Error<PlatformError>> {
-    let riff = parse_chunk(bytes, 0)?;
+/// parses the file in the first pass to find out where each chunk is located
+fn parse_chunks<File: PlatformFile, const MAX_CHUNKS: usize>(
+    buf: &mut [u8],
+    file: &mut File,
+    chunks: &mut Vec<Chunk, MAX_CHUNKS>,
+    file_offset: usize,
+) -> Result<(), Error> {
+    file.seek_from_start(file_offset)
+        .map_err(Error::PlatformError)?;
+    let read_len = match file.read(buf) {
+        Ok(len) => len,
+        Err(PlatformFileError::EOF) => return Ok(()),
+        Err(e) => return Err(Error::PlatformError(e)),
+    };
 
-    if riff.chunk != ChunkTag::Riff && riff.chunk != ChunkTag::Rifx {
-        return Err(Error::NoRiffChunkFound);
+    if read_len == 0 {
+        return Ok(()); // EOF
     }
 
-    if ChunkTag::from_bytes(
-        bytes[8..12]
-            .try_into()
-            .map_err(|_| Error::BufferSizeIncorrect)?,
-    )
-    .map_err(|_: Error<PlatformError>| Error::NoWaveTagFound)?
-        != ChunkTag::Wave
-    {
-        return Err(Error::NoWaveTagFound);
-    }
+    let mut index = 0;
 
-    // skip to subchunks
-    let mut index = 12;
-    let mut num_chunks = 0;
+    while index + 8 <= read_len {
+        chunks
+            .push(parse_chunk(
+                &buf[index..index + 8]
+                    .try_into()
+                    .map_err(|_| Error::ChunkSizeIncorrect)?,
+                file_offset + index,
+            ))
+            .map_err(|_| Error::ExceededMaxChunks)?;
 
-    while index < bytes.len() {
-        let chunk = parse_chunk(bytes, index)?;
+        extern crate std;
+        use std::println;
+        println!("chunks: {:?}", chunks);
 
-        // align end to even byte
-        index = chunk.end + ((chunk.end & 1) * 8);
+        let last_chunk = chunks.last().unwrap();
+        let chunk_len = last_chunk.end - last_chunk.start + 8;
 
-        chunks[num_chunks] = Some(chunk);
-        num_chunks += 1;
-        if num_chunks >= MAX_CHUNKS {
-            break;
+        if index + chunk_len <= read_len {
+            index += chunk_len;
+        } else {
+            return parse_chunks(buf, file, chunks, chunks.last().unwrap().end);
         }
     }
+    extern crate std;
+    use std::println;
+    println!("most end");
 
-    Ok(())
+    parse_chunks(buf, file, chunks, file_offset + read_len)
 }
 
-fn parse_chunk<PlatformError>(bytes: &[u8], start: usize) -> Result<Chunk, Error<PlatformError>> {
-    let tag = ChunkTag::from_bytes(
-        &bytes[start..start + 4]
-            .try_into()
-            .map_err(|_| Error::BufferSizeIncorrect)?,
-    )?;
-    let size = u32::from_le_bytes(
-        bytes[start + 4..start + 8]
-            .try_into()
-            .map_err(|_| Error::BufferSizeIncorrect)?,
-    ) + 8; // +8 is size of chunk tag and chumk size
+fn parse_chunk(bytes: &[u8; 8], index: usize) -> Chunk {
+    let tag = ChunkTag::from_bytes(&bytes[..4].try_into().unwrap());
+    let mut chunk_len = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
 
-    Ok(Chunk {
-        start,
+    // padding if chunk_len is odd (RIFF word alignment)
+    if chunk_len % 2 != 0 {
+        chunk_len += 1;
+    }
+
+    Chunk {
         chunk: tag,
-        end: start + size as usize,
-    })
+        start: index + 8,
+        end: index + 8 + chunk_len,
+    }
 }
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
@@ -190,17 +202,18 @@ pub enum ChunkTag {
     Wave,
     Fmt,
     Data,
+    Unknown([u8; 4]),
 }
 
 impl ChunkTag {
-    fn from_bytes<PlatformError>(bytes: &[u8; 4]) -> Result<Self, Error<PlatformError>> {
+    fn from_bytes(bytes: &[u8; 4]) -> Self {
         match bytes {
-            [b'R', b'I', b'F', b'F'] => Ok(Self::Riff),
-            [b'R', b'I', b'F', b'X'] => Ok(Self::Rifx),
-            [b'W', b'A', b'V', b'E'] => Ok(Self::Wave),
-            [b'd', b'a', b't', b'a'] => Ok(Self::Data),
-            [b'f', b'm', b't', b' '] => Ok(Self::Fmt),
-            _ => Err(Error::UnknownChunkTag),
+            [b'R', b'I', b'F', b'F'] => Self::Riff,
+            [b'R', b'I', b'F', b'X'] => Self::Rifx,
+            [b'W', b'A', b'V', b'E'] => Self::Wave,
+            [b'd', b'a', b't', b'a'] => Self::Data,
+            [b'f', b'm', b't', b' '] => Self::Fmt,
+            _ => Self::Unknown(*bytes),
         }
     }
 }
@@ -234,8 +247,8 @@ enum AudioFormat {
 }
 
 impl AudioFormat {
-    fn from_bytes<PlatformError>(bytes: &[u8]) -> Result<Self, Error<PlatformError>> {
-        let format = u16::from_le_bytes(bytes.try_into().map_err(|_| Error::BufferSizeIncorrect)?);
+    fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let format = u16::from_le_bytes(bytes.try_into().map_err(|_| Error::ChunkSizeIncorrect)?);
         match format {
             1 => Ok(Self::Pcm),
             _ => Err(Error::UnsupportedAudioFormat),
@@ -243,13 +256,13 @@ impl AudioFormat {
     }
 }
 
-fn parse_fmt<PlatformError>(buf: &[u8]) -> Result<Fmt, Error<PlatformError>> {
+fn parse_fmt(buf: &[u8]) -> Result<Fmt, Error> {
     let format = AudioFormat::from_bytes(&buf[0..2])?;
 
     let num_channels = u16::from_le_bytes(
         buf[2..4]
             .try_into()
-            .map_err(|_| Error::BufferSizeIncorrect)?,
+            .map_err(|_| Error::ChunkSizeIncorrect)?,
     );
     let channels = match num_channels {
         1 => Channels::Mono,
@@ -260,12 +273,12 @@ fn parse_fmt<PlatformError>(buf: &[u8]) -> Result<Fmt, Error<PlatformError>> {
     let sample_rate = u32::from_le_bytes(
         buf[4..8]
             .try_into()
-            .map_err(|_| Error::BufferSizeIncorrect)?,
+            .map_err(|_| Error::ChunkSizeIncorrect)?,
     ) as u16;
     let bit_depth = u16::from_le_bytes(
         buf[14..16]
             .try_into()
-            .map_err(|_| Error::BufferSizeIncorrect)?,
+            .map_err(|_| Error::ChunkSizeIncorrect)?,
     );
 
     let encoding = match bit_depth {
@@ -287,7 +300,7 @@ fn parse_fmt<PlatformError>(buf: &[u8]) -> Result<Fmt, Error<PlatformError>> {
 #[cfg(test)]
 mod tests {
     use super::{AudioFormat, Wav};
-    use crate::{AudioFile, Channels, SampleFormat, TestFile, TestFileError, wav::Error};
+    use crate::{AudioFile, Channels, SampleFormat, TestFile, wav::Error};
 
     #[test]
     fn parse_fmt() {
@@ -300,7 +313,7 @@ mod tests {
             0x10, 0x00, // bits per sample
         ];
 
-        let fmt = super::parse_fmt::<TestFileError>(&bytes).unwrap();
+        let fmt = super::parse_fmt(&bytes).unwrap();
         assert!(fmt.audio_format == AudioFormat::Pcm);
         assert!(fmt.sample_rate == 8_000);
         assert!(fmt.sample_format == SampleFormat::I16);

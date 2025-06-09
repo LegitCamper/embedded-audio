@@ -1,11 +1,11 @@
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
 #[cfg(feature = "embedded-sdmmc")]
-use embedded_sdmmc::{BlockDevice, Error, File, TimeSource};
+use embedded_sdmmc::{BlockDevice, File, TimeSource};
 #[cfg(feature = "std")]
 use std::{
     fs::File,
-    io::{Error, Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom},
 };
 
 pub mod wav;
@@ -80,14 +80,18 @@ impl From<Channels> for u16 {
 
 // }
 
+#[derive(Debug)]
+enum PlatformFileError {
+    SeekOutofBounds,
+    EOF,
+}
+
 /// Platform agnostic file for accessing audio data
 pub trait PlatformFile {
-    type Error;
-
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error>;
-    fn seek_from_current(&mut self, offset: i64) -> Result<(), Self::Error>;
-    fn seek_from_start(&mut self, offset: usize) -> Result<(), Self::Error>;
-    fn seek_from_end(&mut self, offset: usize) -> Result<(), Self::Error>;
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PlatformFileError>;
+    fn seek_from_current(&mut self, offset: i64) -> Result<(), PlatformFileError>;
+    fn seek_from_start(&mut self, offset: usize) -> Result<(), PlatformFileError>;
+    fn seek_from_end(&mut self, offset: usize) -> Result<(), PlatformFileError>;
     fn length(&mut self) -> usize;
 }
 
@@ -100,22 +104,20 @@ impl<
     const MAX_VOLUMES: usize,
 > PlatformFile for File<'_, D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>
 {
-    type Error = Error<D::Error>;
-
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        File::read(self, buf)
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PlatformFileError> {
+        File::read(self, buf).map_err(|_| PlatformFileError::EOF)
     }
 
-    fn seek_from_current(&mut self, offset: i64) -> Result<(), Self::Error> {
-        File::seek_from_current(self, offset as i32)
+    fn seek_from_current(&mut self, offset: i64) -> Result<(), PlatformFileError> {
+        File::seek_from_current(self, offset as i32).map_err(|_| PlatformFileError::SeekOutofBounds)
     }
 
-    fn seek_from_start(&mut self, offset: usize) -> Result<(), Self::Error> {
-        File::seek_from_start(self, offset as u32)
+    fn seek_from_start(&mut self, offset: usize) -> Result<(), PlatformFileError> {
+        File::seek_from_start(self, offset as u32).map_err(|_| PlatformFileError::SeekOutofBounds)
     }
 
-    fn seek_from_end(&mut self, offset: usize) -> Result<(), Self::Error> {
-        File::seek_from_end(self, offset as u32)
+    fn seek_from_end(&mut self, offset: usize) -> Result<(), PlatformFileError> {
+        File::seek_from_end(self, offset as u32).map_err(|_| PlatformFileError::SeekOutofBounds)
     }
 
     fn length(&mut self) -> usize {
@@ -125,30 +127,28 @@ impl<
 
 #[cfg(feature = "std")]
 impl PlatformFile for File {
-    type Error = Error;
-
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        Read::read(self, buf)
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PlatformFileError> {
+        Read::read(self, buf).map_err(|_| PlatformFileError::EOF)
     }
 
-    fn seek_from_current(&mut self, offset: i64) -> Result<(), Self::Error> {
+    fn seek_from_current(&mut self, offset: i64) -> Result<(), PlatformFileError> {
         match Seek::seek(self, SeekFrom::Current(offset)) {
             Ok(_) => Ok(()),
-            Err(e) => Err(e),
+            Err(_) => Err(PlatformFileError::SeekOutofBounds),
         }
     }
 
-    fn seek_from_start(&mut self, offset: usize) -> Result<(), Self::Error> {
+    fn seek_from_start(&mut self, offset: usize) -> Result<(), PlatformFileError> {
         match Seek::seek(self, SeekFrom::Start(offset as u64)) {
             Ok(_) => Ok(()),
-            Err(e) => Err(e),
+            Err(_) => Err(PlatformFileError::SeekOutofBounds),
         }
     }
 
-    fn seek_from_end(&mut self, offset: usize) -> Result<(), Self::Error> {
+    fn seek_from_end(&mut self, offset: usize) -> Result<(), PlatformFileError> {
         match Seek::seek(self, SeekFrom::End(offset as i64)) {
             Ok(_) => Ok(()),
-            Err(e) => Err(e),
+            Err(_) => Err(PlatformFileError::SeekOutofBounds),
         }
     }
 
@@ -175,19 +175,10 @@ impl TestFile {
 }
 
 #[cfg(test)]
-#[derive(Debug)]
-enum TestFileError {
-    SeekOutofBounds,
-    EOF,
-}
-
-#[cfg(test)]
 impl PlatformFile for TestFile {
-    type Error = TestFileError;
-
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, PlatformFileError> {
         if self.current_pos as usize == self.contents.len() {
-            return Err(TestFileError::EOF);
+            return Err(PlatformFileError::EOF);
         }
         let read_len = if self.current_pos as usize + buf.len() >= self.contents.len() {
             self.contents.len() - self.current_pos as usize
@@ -201,27 +192,31 @@ impl PlatformFile for TestFile {
         {
             *buf = *content
         }
-        self.current_pos += buf.len() as u16;
+        self.current_pos += read_len as u16;
         Ok(read_len)
     }
 
-    fn seek_from_current(&mut self, offset: i64) -> Result<(), Self::Error> {
+    fn seek_from_current(&mut self, offset: i64) -> Result<(), PlatformFileError> {
         if offset + self.current_pos as i64 > self.contents.len() as i64 {
-            return Err(TestFileError::SeekOutofBounds);
+            return Err(PlatformFileError::SeekOutofBounds);
         }
-        self.current_pos += offset as u16;
+        if offset.is_positive() {
+            self.current_pos += offset as u16;
+        } else {
+            self.current_pos -= offset as u16;
+        }
         Ok(())
     }
 
-    fn seek_from_start(&mut self, offset: usize) -> Result<(), Self::Error> {
+    fn seek_from_start(&mut self, offset: usize) -> Result<(), PlatformFileError> {
         if offset > self.contents.len() {
-            return Err(TestFileError::SeekOutofBounds);
+            return Err(PlatformFileError::SeekOutofBounds);
         }
         self.current_pos = offset as u16;
         Ok(())
     }
 
-    fn seek_from_end(&mut self, offset: usize) -> Result<(), Self::Error> {
+    fn seek_from_end(&mut self, offset: usize) -> Result<(), PlatformFileError> {
         self.current_pos = (self.contents.len() - offset) as u16;
         Ok(())
     }
