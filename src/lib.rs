@@ -80,7 +80,7 @@ impl From<Channels> for u16 {
 
 // }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PlatformFileError {
     SeekOutofBounds,
     EOF,

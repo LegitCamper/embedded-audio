@@ -4,7 +4,7 @@ use crate::{AudioFile, Channels, PlatformFile, PlatformFileError, SampleFormat};
 
 const MAX_CHUNKS: usize = 25;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     /// No Riff chunk found
     NoRiffChunkFound,
@@ -91,14 +91,22 @@ impl<File: PlatformFile> AudioFile<File> for Wav<File> {
     type Error = Error;
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
-        // ensure the only data being read is audio data from data chunk
-        let buf = if buf.len() + self.data_read >= self.data_end {
-            &mut buf[..self.data_end - self.data_read]
-        } else {
-            &mut buf[..]
-        };
+        // Total bytes in the data chunk
+        let data_len = self.data_end - self.data_start;
 
-        match self.file.read(buf) {
+        // How many bytes are left to read from the data chunk
+        let data_left = data_len.checked_sub(self.data_read).unwrap_or(0);
+
+        // If no more data left to read
+        if data_left == 0 {
+            return Ok(0);
+        }
+
+        // Limit the read to the amount of data left
+        let to_read = buf.len().min(data_left);
+
+        // Perform the read
+        match self.file.read(&mut buf[..to_read]) {
             Ok(len) => {
                 self.data_read += len;
                 Ok(len)
@@ -385,13 +393,55 @@ mod tests {
         assert!(wav.fmt.sample_format == SampleFormat::U8);
 
         let mut sample = [0_u8; 2]; // size of one sample L+R
-        wav.read(&mut sample).unwrap();
+        wav.read(&mut sample).unwrap(); // sample 1
         assert!(sample == [0x01, 0x00]);
-        wav.read(&mut sample).unwrap();
+        wav.read(&mut sample).unwrap(); // sample 2
         assert!(sample == [0xfe, 0xff]);
-        wav.read(&mut sample).unwrap();
+        wav.read(&mut sample).unwrap(); // sample 3
         assert!(sample == [0x02, 0x00]);
-        wav.read(&mut sample).unwrap();
+        wav.read(&mut sample).unwrap(); // sample 4
         assert!(sample == [0xff, 0xff]);
+
+        assert!(wav.read(&mut sample) == Ok(0));
+    }
+
+    #[test]
+    fn chunk_after_data() {
+        let file = TestFile::from_bytes(&[
+            0x52, 0x49, 0x46, 0x46, // RIFF
+            0x32, 0x00, 0x00, 0x00, // chunk size
+            0x57, 0x41, 0x56, 0x45, // WAVE
+            0x64, 0x61, 0x74, 0x61, // data
+            0x08, 0x00, 0x00, 0x00, // data chunk size
+            0x01, 0x00, // sample 1 L+R
+            0xfe, 0xff, // sample 2 L+R
+            0x02, 0x00, // sample 3 L+R
+            0xff, 0xff, // sample 4 L+R
+            0x66, 0x6d, 0x74, 0x20, // fmt
+            0x10, 0x00, 0x00, 0x00, // fmt chunk size
+            0x01, 0x00, // audio format
+            0x02, 0x00, // channel count
+            0x40, 0x1f, 0x00, 0x00, // sample rate
+            0x80, 0x3e, 0x00, 0x00, // byte rate
+            0x20, 0x00, // block align
+            0x08, 0x00, // bits per sample
+        ]);
+        let mut wav = Wav::new(file).unwrap();
+
+        assert!(wav.fmt.channels == Channels::Stereo);
+        assert!(wav.fmt.sample_rate == 8_000);
+        assert!(wav.fmt.sample_format == SampleFormat::U8);
+
+        let mut sample = [0_u8; 2]; // size of one sample L+R
+        wav.read(&mut sample).unwrap(); // sample 1
+        assert!(sample == [0x01, 0x00]);
+        wav.read(&mut sample).unwrap(); // sample 2
+        assert!(sample == [0xfe, 0xff]);
+        wav.read(&mut sample).unwrap(); // sample 3
+        assert!(sample == [0x02, 0x00]);
+        wav.read(&mut sample).unwrap(); // sample 4
+        assert!(sample == [0xff, 0xff]);
+
+        assert!(wav.read(&mut sample) == Ok(0));
     }
 }
