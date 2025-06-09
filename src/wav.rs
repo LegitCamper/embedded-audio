@@ -166,10 +166,6 @@ fn parse_chunks<File: PlatformFile, const MAX_CHUNKS: usize>(
             ))
             .map_err(|_| Error::ExceededMaxChunks)?;
 
-        extern crate std;
-        use std::println;
-        println!("chunks: {:?}", chunks);
-
         let last_chunk = chunks.last().unwrap();
         let chunk_len = last_chunk.end - last_chunk.start + 8;
 
@@ -179,10 +175,6 @@ fn parse_chunks<File: PlatformFile, const MAX_CHUNKS: usize>(
             return parse_chunks(buf, file, chunks, chunks.last().unwrap().end);
         }
     }
-    extern crate std;
-    use std::println;
-    println!("most end");
-
     parse_chunks(buf, file, chunks, file_offset + read_len)
 }
 
@@ -329,7 +321,7 @@ mod tests {
 
     #[test]
     fn parse_le_16bit_8k_mono() {
-        let mut file = TestFile::from_bytes(&[
+        let file = TestFile::from_bytes(&[
             0x52, 0x49, 0x46, 0x46, // RIFF
             0x32, 0x00, 0x00, 0x00, // chunk size
             0x57, 0x41, 0x56, 0x45, // WAVE
@@ -367,7 +359,7 @@ mod tests {
 
     #[test]
     fn parse_le_8bit_8k_stereo() {
-        let mut file = TestFile::from_bytes(&[
+        let file = TestFile::from_bytes(&[
             0x52, 0x49, 0x46, 0x46, // RIFF
             0x32, 0x00, 0x00, 0x00, // chunk size
             0x57, 0x41, 0x56, 0x45, // WAVE

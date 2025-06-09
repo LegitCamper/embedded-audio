@@ -81,7 +81,7 @@ impl From<Channels> for u16 {
 // }
 
 #[derive(Debug)]
-enum PlatformFileError {
+pub enum PlatformFileError {
     SeekOutofBounds,
     EOF,
 }
