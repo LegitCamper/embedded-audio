@@ -91,6 +91,13 @@ impl<File: PlatformFile> AudioFile<File> for Wav<File> {
     type Error = Error;
 
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+        // ensure the only data being read is audio data from data chunk
+        let buf = if buf.len() + self.data_read >= self.data_end {
+            &mut buf[..self.data_end - self.data_read]
+        } else {
+            &mut buf[..]
+        };
+
         match self.file.read(buf) {
             Ok(len) => {
                 self.data_read += len;
