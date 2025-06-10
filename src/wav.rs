@@ -57,6 +57,10 @@ impl<File: PlatformFile> Wav<File> {
             ))
             .unwrap();
 
+        if chunks.first().unwrap().chunk != ChunkTag::Riff {
+            return Err(Error::NoRiffChunkFound);
+        }
+
         parse_chunks(&mut buf, &mut file, &mut chunks, 12)?;
 
         let fmt_chunk = chunks
@@ -205,7 +209,6 @@ fn parse_chunk(bytes: &[u8; 8], index: usize) -> Chunk {
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
 pub enum ChunkTag {
     Riff,
-    Rifx, // riff but declaring file as big-endian
     Wave,
     Fmt,
     Data,
@@ -216,7 +219,6 @@ impl ChunkTag {
     fn from_bytes(bytes: &[u8; 4]) -> Self {
         match bytes {
             [b'R', b'I', b'F', b'F'] => Self::Riff,
-            [b'R', b'I', b'F', b'X'] => Self::Rifx,
             [b'W', b'A', b'V', b'E'] => Self::Wave,
             [b'd', b'a', b't', b'a'] => Self::Data,
             [b'f', b'm', b't', b' '] => Self::Fmt,
